@@ -34,37 +34,26 @@ const productSchema = z.object({
 });
 
 const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }) => {
-  const [selectedFiles, setSelectedFiles] = useState([]);
-  const [imagePreviews, setImagePreviews] = useState([]);
+  // ✅ FIX: Each image slot tracks its type, preview URL, file (if new), and server path (if existing)
+  // Shape of each slot:
+  // ✅ REPLACE WITH THIS
+const [imageSlots, setImageSlots] = useState(() => {
+  if (!product) return [];
+  const images = product.images?.length > 0
+    ? product.images
+    : product.imageUrl ? [product.imageUrl] : [];
 
-  useEffect(() => {
-    // Initialize image previews from product data
-    if (product) {
-      const previews = [];
-      if (product.images && product.images.length > 0) {
-        previews.push(...product.images.map(img => 
-          img.startsWith('http') ? img : `http://localhost:5000${img}`
-        ));
-      } else if (product.imageUrl) {
-        previews.push(
-          product.imageUrl.startsWith('http') 
-            ? product.imageUrl 
-            : `http://localhost:5000${product.imageUrl}`
-        );
-      }
-      setImagePreviews(previews);
-    }
-  }, [product]);
+  return images.map(img => ({
+    type: 'existing',
+    preview: img.startsWith('http') ? img : `http://localhost:5000${img}`,
+    serverPath: img.startsWith('http') ? img.replace('http://localhost:5000', '') : img,
+  }));
+});
+  // { type: 'existing', preview: 'http://...', serverPath: '/uploads/...' }
+  // { type: 'new',      preview: 'blob:...',   file: File }
   const { toast } = useToast();
 
-  const {
-    register,
-    handleSubmit,
-    reset,
-    setValue,
-    watch,
-    formState: { errors },
-  } = useForm({
+  const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm({
     resolver: zodResolver(productSchema),
     defaultValues: product || {
       sizeType: "standard",
@@ -75,11 +64,7 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
 
   const sizes = watch("sizes", []);
 
-
-
-  const addSize = () => {
-    setValue("sizes", [...sizes, { size: "", quantity: 0 }]);
-  };
+  const addSize = () => setValue("sizes", [...sizes, { size: "", quantity: 0 }]);
 
   const updateSize = (index, field, value) => {
     const updatedSizes = [...sizes];
@@ -87,73 +72,57 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
     setValue("sizes", updatedSizes);
   };
 
-  const removeSize = (index) => {
-    setValue("sizes", sizes.filter((_, i) => i !== index));
-  };
+  const removeSize = (index) => setValue("sizes", sizes.filter((_, i) => i !== index));
 
   const handleImageUpload = (event) => {
     const files = Array.from(event.target.files);
-    const invalidFiles = files.filter(
-      file => !['image/jpeg', 'image/png', 'image/gif'].includes(file.type)
-    );
 
+    const invalidFiles = files.filter(f => !['image/jpeg', 'image/png', 'image/gif'].includes(f.type));
     if (invalidFiles.length > 0) {
-      toast({
-        title: "Error",
-        description: "Some files have invalid types. Only JPEG, PNG, and GIF are allowed.",
-        variant: "destructive"
-      });
+      toast({ title: "Error", description: "Only JPEG, PNG, and GIF are allowed.", variant: "destructive" });
       return;
     }
 
-    const largeFiles = files.filter(file => file.size > 5 * 1024 * 1024);
+    const largeFiles = files.filter(f => f.size > 5 * 1024 * 1024);
     if (largeFiles.length > 0) {
-      toast({
-        title: "Error",
-        description: "Some images exceed 5MB size limit",
-        variant: "destructive"
-      });
+      toast({ title: "Error", description: "Some images exceed 5MB size limit", variant: "destructive" });
       return;
     }
 
-    // Create preview URLs for the new files
-    const validFiles = files.filter(file => 
-      ['image/jpeg', 'image/png', 'image/gif'].includes(file.type) && 
-      file.size <= 5 * 1024 * 1024
-    );
+    // ✅ FIX: Each new file gets its own slot with type 'new'
+    const newSlots = files.map(file => ({
+      type: 'new',
+      preview: URL.createObjectURL(file),
+      file,
+    }));
 
-    // Add new files to the end of the array to maintain sequence
-    setSelectedFiles(prev => [...prev, ...validFiles]);
-    
-    // Add new previews to the end of the array
-    const newPreviews = validFiles.map(file => URL.createObjectURL(file));
-    setImagePreviews(prev => [...prev, ...newPreviews]);
+    setImageSlots(prev => [...prev, ...newSlots]);
   };
 
   const removeImage = (index) => {
-    // Revoke the object URL to prevent memory leaks
-    if (selectedFiles[index]) {
-      URL.revokeObjectURL(imagePreviews[index]);
-    }
-    setImagePreviews(prev => prev.filter((_, i) => i !== index));
-    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+    setImageSlots(prev => {
+      const slot = prev[index];
+      // ✅ FIX: Only revoke blob URLs for new files, not existing server image URLs
+      if (slot.type === 'new') {
+        URL.revokeObjectURL(slot.preview);
+      }
+      return prev.filter((_, i) => i !== index);
+    });
   };
 
-  // Cleanup object URLs when component unmounts
+  // Cleanup blob URLs on unmount
   useEffect(() => {
     return () => {
-      imagePreviews.forEach(preview => {
-        if (preview.startsWith('blob:')) {
-          URL.revokeObjectURL(preview);
-        }
+      imageSlots.forEach(slot => {
+        if (slot.type === 'new') URL.revokeObjectURL(slot.preview);
       });
     };
   }, []);
 
   const onFormSubmit = async (data) => {
     try {
-      if (selectedFiles.length === 0 && !data.imageUrl && !product?.imageUrl) {
-        // Removed toast message for image requirement
+      if (imageSlots.length === 0 && !product?.imageUrl) {
+        toast({ title: "Error", description: "At least one image is required", variant: "destructive" });
         return;
       }
 
@@ -167,18 +136,17 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
       };
 
       const formData = new FormData();
-      // Append files in reverse order to maintain the order of newly added images first
-      selectedFiles.forEach((file) => {
-        formData.append('images', file);
-      });
-      
-      // Add existing image URLs to maintain their order
-      if (imagePreviews.length > selectedFiles.length) {
-        const existingImages = imagePreviews.slice(selectedFiles.length);
-        formData.append('existingImages', JSON.stringify(existingImages));
-      }
-      
-      // Format data differently for create vs update
+
+      // ✅ FIX: Separate slots by type cleanly
+      const newFiles = imageSlots.filter(s => s.type === 'new').map(s => s.file);
+      const existingServerPaths = imageSlots.filter(s => s.type === 'existing').map(s => s.serverPath);
+
+      // Append new image files
+      newFiles.forEach(file => formData.append('images', file));
+
+      // ✅ FIX: existingImages is now ONLY the remaining server paths (removals already applied)
+      formData.append('existingImages', JSON.stringify(existingServerPaths));
+
       if (product) {
         formData.append('updates', JSON.stringify(productData));
       } else {
@@ -190,10 +158,7 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
         : "http://localhost:5000/api/products";
       const method = product ? "PUT" : "POST";
 
-      const response = await fetch(apiUrl, {
-        method,
-        body: formData
-      });
+      const response = await fetch(apiUrl, { method, body: formData });
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -209,13 +174,12 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
 
       reset();
       setValue("sizes", [{ size: "", quantity: 0 }]);
-      setSelectedFiles([]);
-      setImagePreviews([]);
+      setImageSlots([]);
       onSubmit();
     } catch (err) {
       toast({
         title: "Error",
-        description: err.response?.data?.error || "Something went wrong",
+        description: err.message || "Something went wrong",
         variant: "destructive",
         className: "bg-white border-red-500 text-red-500",
       });
@@ -223,29 +187,26 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
   };
 
   return (
-    
     <form onSubmit={handleSubmit(onFormSubmit)} className="space-y-6">
       <Input placeholder="Product Name" {...register("name")} />
-      {errors.name && <p className="text-red-500 text-sm">{errors.name.message}</p>}
+      {errors.name && <p className="text-sm text-red-500">{errors.name.message}</p>}
 
       <Textarea placeholder="Description" {...register("description")} />
-      {errors.description && <p className="text-red-500 text-sm">{errors.description.message}</p>}
+      {errors.description && <p className="text-sm text-red-500">{errors.description.message}</p>}
 
       <Input placeholder="Brand" {...register("brand")} />
-      {errors.brand && <p className="text-red-500 text-sm">{errors.brand.message}</p>}
+      {errors.brand && <p className="text-sm text-red-500">{errors.brand.message}</p>}
 
       <select {...register("category")} className="w-full p-2 border rounded-md">
         <option value="">Select Category</option>
         {categories.map((category) => (
-          <option key={category._id} value={category._id}>
-            {category.name}
-          </option>
+          <option key={category._id} value={category._id}>{category.name}</option>
         ))}
       </select>
-      {errors.category && <p className="text-red-500 text-sm">{errors.category.message}</p>}
+      {errors.category && <p className="text-sm text-red-500">{errors.category.message}</p>}
 
       <Input placeholder="SKU" {...register("sku")} />
-      {errors.sku && <p className="text-red-500 text-sm">{errors.sku.message}</p>}
+      {errors.sku && <p className="text-sm text-red-500">{errors.sku.message}</p>}
 
       <select {...register("gender")} className="w-full p-2 border rounded-md">
         <option value="">Select Gender</option>
@@ -253,8 +214,8 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
         <option value="Women">Women</option>
         <option value="Unisex">Unisex</option>
       </select>
-      {errors.gender && <p className="text-red-500 text-sm">{errors.gender.message}</p>}
-      
+      {errors.gender && <p className="text-sm text-red-500">{errors.gender.message}</p>}
+
       <Input type="number" placeholder="Stock Quantity" {...register("stockQuantity")} />
       <Input type="number" placeholder="Price" {...register("price")} />
       <Input type="number" placeholder="Original Price" {...register("originalPrice")} />
@@ -266,7 +227,7 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
         <option value="waist">Waist</option>
       </select>
 
-      <label className="block font-medium mt-4">Sizes</label>
+      <label className="block mt-4 font-medium">Sizes</label>
       {sizes.map((entry, i) => (
         <div key={i} className="flex items-center gap-2 mb-2">
           <Input
@@ -290,26 +251,26 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
 
       <div className="space-y-4">
         <label className="block font-medium">Product Images</label>
-        <Input 
-          type="file" 
-          onChange={handleImageUpload} 
+        <Input
+          type="file"
+          onChange={handleImageUpload}
           accept="image/jpeg,image/png,image/gif"
           multiple
         />
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
-          {imagePreviews.map((preview, index) => (
+        <div className="grid grid-cols-2 gap-4 mt-4 md:grid-cols-4">
+          {imageSlots.map((slot, index) => (
             <div key={index} className="relative group">
-              <img 
-                src={preview} 
-                alt={`Preview ${index + 1}`} 
-                className="w-full h-32 object-cover rounded-md"
+              <img
+                src={slot.preview}
+                alt={`Preview ${index + 1}`}
+                className="object-cover w-full h-32 rounded-md"
               />
               <button
                 type="button"
                 onClick={() => removeImage(index)}
-                className="absolute top-2 right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                className="absolute p-1 text-white transition-opacity bg-red-500 rounded-full opacity-0 top-2 right-2 group-hover:opacity-100"
               >
-                <X className="h-4 w-4" />
+                <X className="w-4 h-4" />
               </button>
             </div>
           ))}
@@ -322,5 +283,3 @@ const AddProductForm = ({ product = null, onSubmit = () => {}, categories = [] }
 };
 
 export default AddProductForm;
-
-

@@ -761,7 +761,15 @@ app.get("/api/products/:id", async (req, res) => {
     try {
         const product = await ProductModel.findById(req.params.id);
         if (!product) return res.status(404).json({ error: "Product not found" });
-        res.json(product);
+        // Only send relative image paths and filter out blob: URLs
+        const productObj = product.toObject();
+        if (Array.isArray(productObj.images)) {
+            productObj.images = productObj.images.filter(img => img && !img.startsWith('blob:'));
+        }
+        if (productObj.imageUrl && productObj.imageUrl.startsWith('blob:')) {
+            productObj.imageUrl = '';
+        }
+        res.json(productObj);
     } catch (error) {
         res.status(500).json({ error: "Failed to fetch product", details: error.message });
     }
@@ -786,20 +794,8 @@ app.put("/api/products/:id", upload.array("images", 5), async (req, res) => {
 
         // Handle multiple image uploads
         if (req.files && req.files.length > 0) {
-            // Create array of new image paths
             const newImagePaths = req.files.map(file => `/uploads/${file.filename}`);
-            
-            // Handle existing images from the frontend
-            let existingImages = [];
-            if (req.body.existingImages) {
-                try {
-                    existingImages = JSON.parse(req.body.existingImages);
-                } catch (err) {
-                    console.error('Error parsing existing images:', err);
-                }
-            }
-            
-            // If replacing all images
+
             if (updates.replaceAllImages) {
                 // Delete old images if they exist
                 if (product.images && product.images.length > 0) {
@@ -812,22 +808,42 @@ app.put("/api/products/:id", upload.array("images", 5), async (req, res) => {
                 }
                 updates.images = newImagePaths;
             } else {
-                // Add new images to the beginning, followed by existing images
-                updates.images = [...newImagePaths, ...existingImages];
+                // ✅ FIX: Use updates.images from the frontend (already has correct paths),
+                // filter out any blob: or non-server URLs, then prepend new uploads.
+                const existingServerImages = Array.isArray(updates.images)
+                    ? updates.images.filter(img => img && !img.startsWith('blob:') && !img.startsWith('http'))
+                    : [];
+
+                updates.images = [...newImagePaths, ...existingServerImages];
             }
-            
+
             // Update main imageUrl for backward compatibility
             updates.imageUrl = updates.images[0];
         }
 
-        // Ensure sizeType and sizes are handled
+        // ✅ FIX: Also sanitize images in updates even when no new files are uploaded
+        if (Array.isArray(updates.images)) {
+            updates.images = updates.images.filter(img => img && !img.startsWith('blob:') && !img.startsWith('http'));
+            if (updates.images.length > 0) {
+                updates.imageUrl = updates.images[0];
+            }
+        }
+
         product.sizeType = updates.sizeType || product.sizeType;
         product.sizes = Array.isArray(updates.sizes) ? updates.sizes : product.sizes;
 
         Object.assign(product, updates);
         await product.save();
 
-        res.json({ message: "Product updated successfully", product });
+        const productObj = product.toObject();
+        if (Array.isArray(productObj.images)) {
+            productObj.images = productObj.images.filter(img => img && !img.startsWith('blob:'));
+        }
+        if (productObj.imageUrl && productObj.imageUrl.startsWith('blob:')) {
+            productObj.imageUrl = productObj.images?.[0] || '';
+        }
+
+        res.json({ message: "Product updated successfully", product: productObj });
     } catch (error) {
         console.error("Error updating product:", error);
         res.status(500).json({ error: "Failed to update product", details: error.message });
