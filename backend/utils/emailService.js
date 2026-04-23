@@ -1,6 +1,6 @@
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
-import { formatIndianRupee } from '../../Quick-Cart-main/src/utils/currency.js';
+import { formatIndianRupee } from '../../frontend/src/utils/currency.js';
 
 dotenv.config();
 
